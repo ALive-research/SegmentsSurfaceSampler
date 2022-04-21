@@ -23,16 +23,17 @@ int main(int argc, char **argv)
   //-----------------------------------------------------------------------------
   // Get the command-line arguments
   //-----------------------------------------------------------------------------
-  if (argc != 4)
+  if (argc != 5)
     {
     std::cout << "Invalid number of arguments\n";
     std::cout << "Usage:\n";
-    std::cout << "./SegmentSurfaceSampler <input image> <target segment label> <output model (.vtp)>" << std::endl;
+    std::cout << "./SegmentSurfaceSampler <input image> <target segment label> <compute only contour (0--false | 1--true)><output model (.vtp)>" << std::endl;
     return EXIT_FAILURE;
     }
   std::string inputFileName = argv[1];
   int targetLabel = atoi(argv[2]);
-  std::string outputFileName = argv[3];
+  int computeContour = atoi(argv[3]);
+  std::string outputFileName = argv[4];
 
   //-----------------------------------------------------------------------------
   // Read the image (ITK)
@@ -56,37 +57,34 @@ int main(int argc, char **argv)
 
   for(it.GoToBegin(); !it.IsAtEnd(); ++it)
     {
-    bool pointAdded = false;
+    // Reset the condition variables.
+    bool segmentInterface = false;
+    bool liverInterface = !(computeContour>0);
+
     if(it.GetCenterPixel() == targetLabel)
       {
       for(int i=0; i<27; ++i)
         {
-
-        // If a point was added, we don't need to continue the
-        // neighborhood analysis.
-        if(pointAdded)
-          {
-          break;
-          }
-
         bool withinBounds;
         auto value = it.GetPixel(i, withinBounds);
 
         // If we are requesting a valid pixel
         if (withinBounds)
           {
-
-          // Check for positive values different from targetLabel
-          if (value != targetLabel && value > 0)
-            {
-            // Get the coordinates of the point and add it to the points set.
-            SegmentationImageType::IndexType index = it.GetIndex(it.GetCenterNeighborhoodIndex());
-            SegmentationImageType::PointType point;
-            image->TransformIndexToPhysicalPoint(index, point);
-            sampledSurfacePoints->InsertNextPoint(point[0], point[1], point[2]);
-            counter++;
-            }
+          segmentInterface = segmentInterface || (value!=targetLabel && value>0);
+          liverInterface = liverInterface || (value==0);
           }
+        }
+
+        // Check for positive values different from targetLabel
+        if (segmentInterface && liverInterface) {
+          // Get the coordinates of the point and add it to the points set.
+          SegmentationImageType::IndexType index =
+              it.GetIndex(it.GetCenterNeighborhoodIndex());
+          SegmentationImageType::PointType point;
+          image->TransformIndexToPhysicalPoint(index, point);
+          sampledSurfacePoints->InsertNextPoint(point[0], point[1], point[2]);
+          counter++;
         }
       }
     }
