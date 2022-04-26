@@ -1,4 +1,7 @@
 // VTK includes
+#include "tclap/MultiSwitchArg.h"
+#include "tclap/SwitchArg.h"
+#include "tclap/ValueArg.h"
 #include <vtkSmartPointer.h>
 #include <vtkPolyData.h>
 #include <vtkPoints.h>
@@ -11,8 +14,13 @@
 #include <itkImageFileReader.h>
 #include <itkNeighborhoodIterator.h>
 
+// TCLAP includes
+#include <tclap/CmdLine.h>
+
 // STD includes
 #include <cstdlib>
+#include <algorithm>
+#include <set>
 
 using SegmentationImageType = itk::Image<short, 3>;
 using SegmentationNeighborhoodIteratorType = itk::ConstNeighborhoodIterator<SegmentationImageType>;
@@ -20,20 +28,37 @@ using SegmentationReaderType = itk::ImageFileReader<SegmentationImageType>;
 
 int main(int argc, char **argv)
 {
-  //-----------------------------------------------------------------------------
-  // Get the command-line arguments
-  //-----------------------------------------------------------------------------
-  if (argc != 5)
-    {
-    std::cout << "Invalid number of arguments\n";
-    std::cout << "Usage:\n";
-    std::cout << "./SegmentSurfaceSampler <input image> <target segment label> <compute only contour (0--false | 1--true)><output model (.vtp)>" << std::endl;
-    return EXIT_FAILURE;
-    }
-  std::string inputFileName = argv[1];
-  int targetLabel = atoi(argv[2]);
-  int computeContour = atoi(argv[3]);
-  std::string outputFileName = argv[4];
+  std::string inputFileName ;
+  std::string outputFileName;
+  std::vector<int> targetLabelsV;
+  int computeContour;
+
+  try {
+
+	TCLAP::CmdLine cmd("This program extract liver segments interfaces into clouds of points", ' ', "0.9");
+  TCLAP::ValueArg<std::string> inputImageArg("i", "intput", "Path to input image file",false,"#","string");
+  TCLAP::MultiArg<int> inputLabelsArg("l", "label", "Label to extract", true, "int");
+  TCLAP::ValueArg<std::string> outputModelArg("o", "output", "Path to output model file", false, "#", "string");
+  TCLAP::SwitchArg contourSwitch("c", "contour", "Compute only the contour", false);
+
+  cmd.add(inputImageArg);
+  cmd.add(inputLabelsArg);
+  cmd.add(outputModelArg);
+  cmd.add(contourSwitch);
+
+  cmd.parse(argc, argv);
+
+  inputFileName = inputImageArg.getValue();
+  outputFileName = outputModelArg.getValue();
+  targetLabelsV = inputLabelsArg.getValue();
+  computeContour = contourSwitch.getValue()?1:0;
+
+  } catch (TCLAP::ArgException &e)  // catch exceptions
+    { std::cerr << "error: " << e.error() << " for arg " << e.argId() << std::endl; }
+
+  // Insert the vector values to a set
+  std::set<int> targetLabels(std::make_move_iterator(targetLabelsV.begin()),
+                             std::make_move_iterator(targetLabelsV.end()));
 
   //-----------------------------------------------------------------------------
   // Read the image (ITK)
@@ -52,7 +77,6 @@ int main(int argc, char **argv)
   //-----------------------------------------------------------------------------
   // Loop over the image to find segment boundaries (ITK/VTK)
   //-----------------------------------------------------------------------------
-  long int counter = 0;
   auto sampledSurfacePoints = vtkSmartPointer<vtkPoints>::New();
 
   for(it.GoToBegin(); !it.IsAtEnd(); ++it)
@@ -60,8 +84,10 @@ int main(int argc, char **argv)
     // Reset the condition variables.
     bool segmentInterface = false;
     bool liverInterface = !(computeContour>0);
+    bool interfaceWithAnotherLabel = true;
 
-    if(it.GetCenterPixel() == targetLabel)
+    // if any of the target labels is the center of the window
+    if(std::find(targetLabels.begin(), targetLabels.end(), it.GetCenterPixel()) != targetLabels.end())
       {
       for(int i=0; i<27; ++i)
         {
@@ -71,7 +97,11 @@ int main(int argc, char **argv)
         // If we are requesting a valid pixel
         if (withinBounds)
           {
-          segmentInterface = segmentInterface || (value!=targetLabel && value>0);
+          // Check that is any of the other target labels
+          bool valueInTargetLabels =
+            std::find(targetLabels.begin(), targetLabels.end(), value) == targetLabels.end() && // Part of the labels set
+            it.GetCenterPixel() != value;                                                       // but not the one in the center
+          segmentInterface = segmentInterface || (valueInTargetLabels && value>0);
           liverInterface = liverInterface || (value==0);
           }
         }
@@ -79,12 +109,10 @@ int main(int argc, char **argv)
         // Check for positive values different from targetLabel
         if (segmentInterface && liverInterface) {
           // Get the coordinates of the point and add it to the points set.
-          SegmentationImageType::IndexType index =
-              it.GetIndex(it.GetCenterNeighborhoodIndex());
+          SegmentationImageType::IndexType index = it.GetIndex(it.GetCenterNeighborhoodIndex());
           SegmentationImageType::PointType point;
           image->TransformIndexToPhysicalPoint(index, point);
           sampledSurfacePoints->InsertNextPoint(point[0], point[1], point[2]);
-          counter++;
         }
       }
     }
@@ -115,8 +143,6 @@ int main(int argc, char **argv)
   xmlPolyDataWriter->SetInputConnection(transformFilter->GetOutputPort());
   xmlPolyDataWriter->SetFileName(outputFileName.c_str());
   xmlPolyDataWriter->Write();
-
-  std::cout << counter << std::endl;
 
   return EXIT_SUCCESS;
 }
